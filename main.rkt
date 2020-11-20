@@ -5,6 +5,7 @@
 #lang racket/gui
 
 (require racket/gui/base)
+(provide main)
 
 (define *bg-color* (make-color 255 255 255))
 (define *xangle* (cos (/ (* 5 pi) 4.)))
@@ -57,24 +58,24 @@
         (geom null)
         (skip 0)
         (ht (make-hash)))
-  (for ((l (in-lines in)))
-    (cond
-      ((string-contains? l "LXM MATRIX") (set! in-lxm? #t) (set! head? #t))
-      ((string-contains? l "LX MATRIX") (set! in-lxm? #f))
-      ((string-contains? l "MOLECULAR CARTESIAN GEOMETRY") (set! geom? #t) (set! skip 2))
-      ((> skip 0) (set! skip (- skip 1)))
-      ((and geom? (empty-string? l)) (set! geom? #f))
-      (geom? (set! geom (cons (cdr (string-split l)) geom)))
-      ((and in-lxm? (empty-string? l)) (set! head? #t))
-      ((and in-lxm? (not (string-contains? l "---")) (dot? l))
-       (cond
-         (head? (set! head? #f)
-                (set! freqs (append freqs (process-freqs (string-split l)))))
-         (else
-          (let* ((slc (string-split l))
-                 (fst (car slc)))
-            (hash-set! ht fst (append (hash-ref ht fst null) (cdr slc)))))))))
-  (values freqs ht (reverse geom))))
+    (for ((l (in-lines in)))
+      (cond
+        ((string-contains? l "LXM MATRIX") (set! in-lxm? #t) (set! head? #t))
+        ((string-contains? l "LX MATRIX") (set! in-lxm? #f))
+        ((string-contains? l "MOLECULAR CARTESIAN GEOMETRY") (set! geom? #t) (set! skip 2))
+        ((> skip 0) (set! skip (- skip 1)))
+        ((and geom? (empty-string? l)) (set! geom? #f))
+        (geom? (set! geom (cons (cdr (string-split l)) geom)))
+        ((and in-lxm? (empty-string? l)) (set! head? #t))
+        ((and in-lxm? (not (string-contains? l "---")) (dot? l))
+         (cond
+           (head? (set! head? #f)
+                  (set! freqs (append freqs (process-freqs (string-split l)))))
+           (else
+            (let* ((slc (string-split l))
+                   (fst (car slc)))
+              (hash-set! ht fst (append (hash-ref ht fst null) (cdr slc)))))))))
+    (values freqs ht (reverse geom))))
 
 (define-values (freqs contribs geom) (call-with-input-file infile read-output))
 
@@ -111,29 +112,39 @@
 (define my-frame%
   (class frame%
     (define/override (on-subwindow-char rec event)
-      (let* ((sel (send list-box get-selections2))
-             (sel-max (- (send list-box number-of-visible-items) 1)) 
-             (sli (send slider get-value)))
+      (let ((sli (send slider get-value)))
         (cond
           ((equal? (send event get-key-code) #\q)
            (exit))
           ((equal? (send event get-key-code) 'escape)
            (send list-box clear-select))
           ((equal? (send event get-key-code) #\j)
-           (cond
-             ((null? sel) (send list-box select 0))
-             ((< sel sel-max)
-              (send list-box select (+ 1 sel)))))
+           (send list-box incr-select))
           ((equal? (send event get-key-code) #\k)
-           (cond
-             ((null? sel) (send list-box select sel-max))
-             ((> sel 0) (send list-box select (- sel 1)))))
+           (send list-box decr-select))
           ((equal? (send event get-key-code) #\l)
            (when (< sli slide-max)
              (send slider set-value (+ (send slider get-value) 5))))
           ((equal? (send event get-key-code) #\h)
            (when (> sli slide-min)
              (send slider set-value (- (send slider get-value) 5)))))))
+    (define/override (on-subwindow-event rec event)
+      (define startx 0)
+      (define starty 0)
+      (if (equal? rec canvas)
+          (cond 
+            ((send event button-down? 'left)
+             (let ((x (send event get-x))
+                   (y (send event get-y)))
+               (set! startx x)
+               (set! starty y)
+               (send msg set-label (format "(~a, ~a)" x y))))
+            ((send event button-up? 'left)
+             (let ((x (send event get-x))
+                   (y (send event get-y)))
+               (send msg set-label
+                     (format "~a -> (~a, ~a)" (send msg get-label) x y)))))
+          (super on-subwindow-event rec event)))
     (super-new)))
 
 (define frame (new my-frame%
@@ -148,6 +159,10 @@
 
 (define left-panel (new vertical-panel%
                         (parent panel)))
+
+(define msg (new message%
+                 (parent frame)
+                 (label "Test")))
 
 (define (center canvas)
   (let ((width (send canvas get-width))
@@ -208,14 +223,14 @@
 (define (cart->2d canvas x y z scale)
   (let-values (((cw ch) (center canvas))
                ((mw mh) (extent canvas)))
-  (values
-   (+ cw (* (+ y (* x *xangle*)) (- mw cw) scale))
-   (- ch (* (+ z (* x *yangle*)) (- mh ch) scale)))))
+    (values
+     (+ cw (* (+ y (* x *xangle*)) (- mw cw) scale))
+     (- ch (* (+ z (* x *yangle*)) (- mh ch) scale)))))
 
 (define (draw-atom canvas dc atom x y z)
-    (let-values (((w h) (cart->2d canvas x y z *atom-scale*)))
-      (send dc set-brush (atom-color atom) 'solid)
-      (send dc draw-ellipse w h 20 20))
+  (let-values (((w h) (cart->2d canvas x y z *atom-scale*)))
+    (send dc set-brush (atom-color atom) 'solid)
+    (send dc draw-ellipse w h 20 20))
   (send dc set-brush def-brush))
 
 (define (draw-axes canvas dc)
@@ -231,10 +246,23 @@
   (class list-box%
     (define/public (clear-select)
       (let ((test (send this get-selections2)))
-      (unless (null? test) (send this select test #f))))
+        (unless (null? test) (send this select test #f))))
     (define/public (get-selections2)
       (let* ((sel (send this get-selections)))
         (if (not (null? sel)) (car sel) null)))
+    (define/public (sel-max)
+      (- (send this number-of-visible-items) 1))
+    (define/public (incr-select)
+      (let ((sel (send this get-selections2)))
+        (cond
+          ((null? sel) (send list-box select 0))
+          ((< sel (send this sel-max))
+           (send list-box select (+ 1 sel))))))
+    (define/public (decr-select)
+      (let ((sel (send this get-selections2)))
+        (cond
+          ((null? sel) (send list-box select (send this sel-max)))
+          ((> sel 0) (send list-box select (- sel 1))))))
     (super-new)))
 
 (define canvas (new canvas%
@@ -274,8 +302,6 @@
                       (columns '("Frequencies"))
                       (style '(single column-headers))))
 
-(send frame show #t)
-
 (define (draw-canvas canvas dc)
   (draw-axes canvas dc)
   (draw-geom canvas dc atoms coords))
@@ -300,16 +326,18 @@
 
 (define ref-coords coords)
 
-(define prev
+(define (prev)
   (let ((hold null))
     (lambda (next)
       (begin0
           (equal? hold next)
         (set! hold next)))))
 
+(define prev-sel (prev))
+
 (define (loop)
   (let* ((sel (send list-box get-selections2))
-         (diff? (prev sel)))
+         (diff? (prev-sel sel)))
     (unless diff? ;; if new selection made, reset coords
       (set! coords ref-coords))
     (unless (null? sel) ;; only vibrate when there is a selection
@@ -321,5 +349,9 @@
   (sleep/yield *refresh-rate*)
   (loop))
 
-(loop)
+(define (main)
+  (send frame show #t)
+  (loop))
+
+;(main)
 
