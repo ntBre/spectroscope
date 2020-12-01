@@ -1,3 +1,9 @@
+;; TODO capture interplay between theta and phi - not quite there yet
+;; - can change them separately but not together
+;; - also need to slow down rotation
+;; - problem with bounds, how to go past pi in theta? really need to
+;;   start subtracting from pi and change phi instead by pi radians
+;;   - might be causing the jumpiness
 ;; TODO reset geometry when slider changes, otherwise can trap on wrong side
 ;; TODO offsets for labels aren't going to work when rotated
 ;; TODO could probably DRY out draw-x,y,z but not sure how exactly. macro?
@@ -7,12 +13,24 @@
 (require racket/gui/base)
 (provide main)
 
+(define theta0 0)
+(define (theta x y z)
+  (if (= x y z 0)
+      0
+      (acos (/ z (radius x y z)))))
+
+(define phi0 0)
+(define (phi x y)
+  (if (= x y 0)
+      0
+      (atan y x)))
+
 (define *bg-color* (make-color 255 255 255))
 (define *xangle* (cos (/ (* 5 pi) 4.)))
 (define *yangle* (sin (/ (* 5 pi) 4.)))
 (define *axis-scale* 0.75)
 (define *atom-scale* 0.25)
-(define *refresh-rate* 0.5)
+(define *refresh-rate* 0.2)
 
 (struct vib (freq contribs)
   #:transparent
@@ -109,60 +127,11 @@
 (define coords
   (map (lambda (l) (map string->number (take l 3))) geom))
 
-(define my-frame%
-  (class frame%
-    (define/override (on-subwindow-char rec event)
-      (let ((sli (send slider get-value)))
-        (cond
-          ((equal? (send event get-key-code) #\q)
-           (exit))
-          ((equal? (send event get-key-code) 'escape)
-           (send list-box clear-select))
-          ((equal? (send event get-key-code) #\j)
-           (send list-box incr-select))
-          ((equal? (send event get-key-code) #\k)
-           (send list-box decr-select))
-          ((equal? (send event get-key-code) #\l)
-           (when (< sli slide-max)
-             (send slider set-value (+ (send slider get-value) 5))))
-          ((equal? (send event get-key-code) #\h)
-           (when (> sli slide-min)
-             (send slider set-value (- (send slider get-value) 5)))))))
-    (define/override (on-subwindow-event rec event)
-      (define startx 0)
-      (define starty 0)
-      (if (equal? rec canvas)
-          (cond 
-            ((send event button-down? 'left)
-             (let ((x (send event get-x))
-                   (y (send event get-y)))
-               (set! startx x)
-               (set! starty y)
-               (send msg set-label (format "(~a, ~a)" x y))))
-            ((send event button-up? 'left)
-             (let ((x (send event get-x))
-                   (y (send event get-y)))
-               (send msg set-label
-                     (format "~a -> (~a, ~a)" (send msg get-label) x y)))))
-          (super on-subwindow-event rec event)))
-    (super-new)))
-
-(define frame (new my-frame%
-                   (label "spectroscope")
-                   (width 500)
-                   (height 500)))
-
-(define panel (new horizontal-panel%
-                   (style '(border))
-                   (parent frame)
-                   (alignment '(center center))))
-
-(define left-panel (new vertical-panel%
-                        (parent panel)))
-
-(define msg (new message%
-                 (parent frame)
-                 (label "Test")))
+;; dont actually want start -> end, just want start and if drag?
+;; then send the start and current dragging position to the angle calculator
+;; still record the start like this (actually should probably be a method?) - no a field
+;; and then have separate if drag clause
+;; ie, if start (record x y), if drag (set angle)
 
 (define (center canvas)
   (let ((width (send canvas get-width))
@@ -220,9 +189,26 @@
     (define-values (woff hoff d a) (send dc get-text-extent "z"))
     (send dc draw-text "z" (- wend (/ woff 2)) (- hend hoff))))
 
+(define radius
+  (lambda vec
+    (sqrt (apply + (map (lambda (l)
+                          (* l l)) vec)))))
+
+(define (cart->sphere x y z)
+  (let ((r (radius x y z))
+        (p (phi x y))
+        (t (theta x y z)))
+    (set! p (+ p (* (sin t) phi0)))
+    (set! t (+ t (* (cos p) theta0)))
+    (values
+     (* r (sin t) (cos p))
+     (* r (sin t) (sin p))
+     (* r (cos t)))))
+
 (define (cart->2d canvas x y z scale)
   (let-values (((cw ch) (center canvas))
-               ((mw mh) (extent canvas)))
+               ((mw mh) (extent canvas))
+               ((x y z) (cart->sphere x y z)))
     (values
      (+ cw (* (+ y (* x *xangle*)) (- mw cw) scale))
      (- ch (* (+ z (* x *yangle*)) (- mh ch) scale)))))
@@ -242,28 +228,81 @@
   (for ((atom atoms) (coord coords))
     (apply draw-atom canvas dc atom coord)))
 
-(define my-list-box%
-  (class list-box%
-    (define/public (clear-select)
-      (let ((test (send this get-selections2)))
-        (unless (null? test) (send this select test #f))))
-    (define/public (get-selections2)
-      (let* ((sel (send this get-selections)))
-        (if (not (null? sel)) (car sel) null)))
-    (define/public (sel-max)
-      (- (send this number-of-visible-items) 1))
-    (define/public (incr-select)
-      (let ((sel (send this get-selections2)))
-        (cond
-          ((null? sel) (send list-box select 0))
-          ((< sel (send this sel-max))
-           (send list-box select (+ 1 sel))))))
-    (define/public (decr-select)
-      (let ((sel (send this get-selections2)))
-        (cond
-          ((null? sel) (send list-box select (send this sel-max)))
-          ((> sel 0) (send list-box select (- sel 1))))))
+
+(define slide-min 0)
+(define slide-max 100)
+(define slide-init 50)
+
+(define (magnitude)
+  (/ (send slider get-value) slide-max))
+
+
+(define (draw-canvas canvas dc)
+  (draw-axes canvas dc)
+  (draw-geom canvas dc atoms coords))
+
+(define my-frame%
+  (class frame%
+    (define/override (on-subwindow-char rec event)
+      (cond
+        ((equal? (send event get-key-code) #\q)
+         (exit))
+        ((equal? (send event get-key-code) 'escape)
+         (send list-box clear-select))
+        ((equal? (send event get-key-code) #\j)
+         (send list-box incr-select))
+        ((equal? (send event get-key-code) #\k)
+         (send list-box decr-select))
+        ((equal? (send event get-key-code) #\l)
+         (send slider set-value
+               (let ((val (+ (send slider get-value) 5))
+                     (maxp (send slider get-max)))
+                 (if (> val maxp)
+                     maxp
+                     val))))
+        ((equal? (send event get-key-code) #\h)
+         (send slider set-value
+               (let ((val (- (send slider get-value) 5))
+                     (minp (send slider get-min)))
+                 (if (< val minp)
+                     minp
+                     val))))))
+    (field (startx 0)
+           (starty 0))
+    (define/override (on-subwindow-event rec event)
+      (if (equal? rec canvas)
+          (cond 
+            ((send event button-down? 'left)
+             (set!-values (startx starty)
+                          (values (send event get-x) (send event get-y))))
+            ((send event dragging?)
+             (let ((x (send event get-x))
+                   (y (send event get-y)))
+               ;; (set! phi0 (+ phi0 (/ (- x startx) (send rec get-height))))
+               ;; (set! theta0 (+ theta0 (/ (- y starty) (send rec get-width))))
+               (send msg set-label
+                     (format "(~a, ~a) -> (~a, ~a)" startx starty x y)))))
+          (super on-subwindow-event rec event)))
     (super-new)))
+
+(define frame (new my-frame%
+                   (label "spectroscope")
+                   (width 500)
+                   (height 500)))
+
+(define msg (new message%
+                 (parent frame)
+                 (label "Test")))
+
+(define panel (new horizontal-panel%
+                   (style '(border))
+                   (parent frame)
+                   (alignment '(center center))))
+
+
+(define left-panel (new vertical-panel%
+                        (parent panel)))
+
 
 (define canvas (new canvas%
                     (parent left-panel)
@@ -277,19 +316,41 @@
 (define dc (send canvas get-dc))
 (send canvas set-canvas-background *bg-color*)
 
-(define slide-min 0)
-(define slide-max 100)
-(define slide-init 50)
+(define my-slider%
+  (class slider%
+    (init-field (min-value 0)
+                (max-value 0))
+    (define/public (magnitude)
+      (/ (send this get-value) max-value))
+    (define/public (get-max)
+      max-value)
+    (define/public (get-min)
+      min-value)
+    (super-new (min-value min-value)
+               (max-value max-value))))
 
-(define (magnitude)
-  (/ (send slider get-value) slide-max))
-
-(define slider (new slider%
-                    (label "Magnitude")
-                    (parent left-panel)
-                    (min-value slide-min)
-                    (max-value slide-max)
-                    (init-value slide-init)))
+(define my-list-box%
+  (class list-box%
+    (define/public (clear-select)
+      (let ((test (send this get-selections2)))
+        (unless (null? test) (send this select test #f))))
+    (define/public (get-selections2)
+      (let* ((sel (send this get-selections)))
+        (if (not (null? sel)) (car sel) null)))
+    (define/public (sel-max)
+      (- (send this number-of-visible-items) 1))
+    (define/public (incr-select)
+      (let ((sel (send this get-selections2)))
+        (cond
+          ((null? sel) (send this select 0))
+          ((< sel (send this sel-max))
+           (send this select (+ 1 sel))))))
+    (define/public (decr-select)
+      (let ((sel (send this get-selections2)))
+        (cond
+          ((null? sel) (send this select (send this sel-max)))
+          ((> sel 0) (send this select (- sel 1))))))
+    (super-new)))
 
 (define right-panel (new vertical-panel%
                          (parent panel)))
@@ -302,9 +363,12 @@
                       (columns '("Frequencies"))
                       (style '(single column-headers))))
 
-(define (draw-canvas canvas dc)
-  (draw-axes canvas dc)
-  (draw-geom canvas dc atoms coords))
+(define slider (new my-slider%
+                    (label "Magnitude")
+                    (parent left-panel)
+                    (min-value 0)
+                    (max-value 100)
+                    (init-value slide-init)))
 
 (define (resplit lst)
   (cond
@@ -315,7 +379,9 @@
   (let ((n 0)
         (steps (list + - - +)))
     (lambda (contribs (reset? #f))
-      (when reset? (set! n 0))
+      (when reset?
+        (set! n 0)
+        (set! coords ref-coords))
       (let ((op (list-ref steps (remainder n 4)))
             (mag (magnitude)))
         (set! coords (resplit (map op
@@ -335,10 +401,13 @@
 
 (define prev-sel (prev))
 
+(define prev-slide (prev))
+
 (define (loop)
   (let* ((sel (send list-box get-selections2))
-         (diff? (prev-sel sel)))
-    (unless diff? ;; if new selection made, reset coords
+         (sli (send slider get-value))
+         (diff? (and (prev-sel sel) (prev-slide sli))))
+    (when diff? ;; if new selection or slider value, reset coords
       (set! coords ref-coords))
     (unless (null? sel) ;; only vibrate when there is a selection
       (if diff? 
@@ -354,4 +423,3 @@
   (loop))
 
 ;(main)
-

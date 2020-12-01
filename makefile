@@ -1,7 +1,8 @@
 TARGET := scope
 
+run:
+	racket -tm main.rkt
+
 all:
 	raco exe -o $(TARGET) main.rkt
 
-run:
-	racket main.rkt
