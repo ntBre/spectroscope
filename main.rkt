@@ -1,10 +1,9 @@
-;; TODO capture interplay between theta and phi - not quite there yet
-;; - can change them separately but not together
-;; - also need to slow down rotation
-;; - problem with bounds, how to go past pi in theta? really need to
-;;   start subtracting from pi and change phi instead by pi radians
-;;   - might be causing the jumpiness
-;; TODO reset geometry when slider changes, otherwise can trap on wrong side
+;; TODO matrix multiply for combinations of Rx Ry and Rz
+;; - also need to use these in cart->2d
+;; - using equations from http://web.cs.wpi.edu/~emmanuel/courses/cs543/slides/lecture04_p1.pdf
+;; TODO fix stutter on changing slider
+;; TODO figure out why only two positions in vibrate
+;; - never hits the reference again - probably related to stutter
 ;; TODO offsets for labels aren't going to work when rotated
 ;; TODO could probably DRY out draw-x,y,z but not sure how exactly. macro?
 ;; could use parameter to return pen to default
@@ -13,17 +12,37 @@
 (require racket/gui/base)
 (provide main)
 
-(define theta0 0)
-(define (theta x y z)
-  (if (= x y z 0)
-      0
-      (acos (/ z (radius x y z)))))
+;; rotation matrices
+(define Rx (list 1 0 0
+                 0 1 0
+                 0 0 1))
 
-(define phi0 0)
-(define (phi x y)
-  (if (= x y 0)
-      0
-      (atan y x)))
+(define Ry (list 1 0 0
+                 0 1 0
+                 0 0 1))
+
+(define Rz (list 1 0 0
+                 0 1 0
+                 0 0 1))
+
+(define (dot a b)
+  (+ (* (car a) (car b))
+     (if (null? (cdr a))
+         0
+         (dot (cdr a) (cdr b)))))
+
+(define (v+ a b)
+  (cons (+ (car a) (car b))
+        (if (or (null? (cdr a)) (null? (cdr b)))
+            null
+            (v+ (cdr a) (cdr b)))))
+
+;; dot product of 3x3 matrix and 3x1 vector
+(define (dot-mv mat vec)
+  (cons (dot (take mat 3) vec)
+        (if (< (length mat) 6)
+            null
+            (dot-mv (drop mat 3) vec))))
 
 (define *bg-color* (make-color 255 255 255))
 (define *xangle* (cos (/ (* 5 pi) 4.)))
@@ -189,30 +208,6 @@
     (define-values (woff hoff d a) (send dc get-text-extent "z"))
     (send dc draw-text "z" (- wend (/ woff 2)) (- hend hoff))))
 
-(define radius
-  (lambda vec
-    (sqrt (apply + (map (lambda (l)
-                          (* l l)) vec)))))
-
-(define (cart->sphere x y z)
-  (let ((r (radius x y z))
-        (p (phi x y))
-        (t (theta x y z)))
-    (set! p (+ p (* (sin t) phi0)))
-    (set! t (+ t (* (cos p) theta0)))
-    (values
-     (* r (sin t) (cos p))
-     (* r (sin t) (sin p))
-     (* r (cos t)))))
-
-(define (cart->2d canvas x y z scale)
-  (let-values (((cw ch) (center canvas))
-               ((mw mh) (extent canvas))
-               ((x y z) (cart->sphere x y z)))
-    (values
-     (+ cw (* (+ y (* x *xangle*)) (- mw cw) scale))
-     (- ch (* (+ z (* x *yangle*)) (- mh ch) scale)))))
-
 (define (draw-atom canvas dc atom x y z)
   (let-values (((w h) (cart->2d canvas x y z *atom-scale*)))
     (send dc set-brush (atom-color atom) 'solid)
@@ -228,14 +223,19 @@
   (for ((atom atoms) (coord coords))
     (apply draw-atom canvas dc atom coord)))
 
+(define radius
+  (lambda vec
+    (sqrt (apply + (map (lambda (l)
+                          (* l l)) vec)))))
 
-(define slide-min 0)
-(define slide-max 100)
-(define slide-init 50)
-
-(define (magnitude)
-  (/ (send slider get-value) slide-max))
-
+(define (cart->2d canvas x y z scale)
+  (let-values (((cw ch) (center canvas))
+               ((mw mh) (extent canvas))
+               ((x y z) (match (dot-mv Rx (list x y z))
+                          ((list a b c) (values a b c)))))
+    (values
+     (+ cw (* (+ y (* x *xangle*)) (- mw cw) scale))
+     (- ch (* (+ z (* x *yangle*)) (- mh ch) scale)))))
 
 (define (draw-canvas canvas dc)
   (draw-axes canvas dc)
@@ -244,45 +244,13 @@
 (define my-frame%
   (class frame%
     (define/override (on-subwindow-char rec event)
-      (cond
-        ((equal? (send event get-key-code) #\q)
-         (exit))
-        ((equal? (send event get-key-code) 'escape)
-         (send list-box clear-select))
-        ((equal? (send event get-key-code) #\j)
-         (send list-box incr-select))
-        ((equal? (send event get-key-code) #\k)
-         (send list-box decr-select))
-        ((equal? (send event get-key-code) #\l)
-         (send slider set-value
-               (let ((val (+ (send slider get-value) 5))
-                     (maxp (send slider get-max)))
-                 (if (> val maxp)
-                     maxp
-                     val))))
-        ((equal? (send event get-key-code) #\h)
-         (send slider set-value
-               (let ((val (- (send slider get-value) 5))
-                     (minp (send slider get-min)))
-                 (if (< val minp)
-                     minp
-                     val))))))
-    (field (startx 0)
-           (starty 0))
-    (define/override (on-subwindow-event rec event)
-      (if (equal? rec canvas)
-          (cond 
-            ((send event button-down? 'left)
-             (set!-values (startx starty)
-                          (values (send event get-x) (send event get-y))))
-            ((send event dragging?)
-             (let ((x (send event get-x))
-                   (y (send event get-y)))
-               ;; (set! phi0 (+ phi0 (/ (- x startx) (send rec get-height))))
-               ;; (set! theta0 (+ theta0 (/ (- y starty) (send rec get-width))))
-               (send msg set-label
-                     (format "(~a, ~a) -> (~a, ~a)" startx starty x y)))))
-          (super on-subwindow-event rec event)))
+      (case (send event get-key-code)
+        ((#\q) (exit))
+        ('escape (send list-box clear-select))
+        ((#\j) (send list-box incr-select))
+        ((#\k) (send list-box decr-select))
+        ((#\l) (send slider incr-slide))
+        ((#\h) (send slider decr-slide))))
     (super-new)))
 
 (define frame (new my-frame%
@@ -290,19 +258,13 @@
                    (width 500)
                    (height 500)))
 
-(define msg (new message%
-                 (parent frame)
-                 (label "Test")))
-
 (define panel (new horizontal-panel%
                    (style '(border))
                    (parent frame)
                    (alignment '(center center))))
 
-
 (define left-panel (new vertical-panel%
                         (parent panel)))
-
 
 (define canvas (new canvas%
                     (parent left-panel)
@@ -313,7 +275,6 @@
                        (draw-canvas canvas dc)))))
 
 (send canvas focus)
-(define dc (send canvas get-dc))
 (send canvas set-canvas-background *bg-color*)
 
 (define my-slider%
@@ -326,6 +287,20 @@
       max-value)
     (define/public (get-min)
       min-value)
+    (define/public (incr-slide)
+      (send this set-value
+            (let ((val (+ (send this get-value) 5))
+                  (maxp (send this get-max)))
+              (if (> val maxp)
+                  maxp
+                  val))))
+    (define/public (decr-slide)
+      (send this set-value
+            (let ((val (- (send this get-value) 5))
+                  (minp (send this get-min)))
+              (if (< val minp)
+                  minp
+                  val))))
     (super-new (min-value min-value)
                (max-value max-value))))
 
@@ -363,12 +338,44 @@
                       (columns '("Frequencies"))
                       (style '(single column-headers))))
 
+(define xpanel (new horizontal-panel%
+                    (parent right-panel)
+                    (style '(border))
+                    (alignment '(center center))))
+
+(define xlabel (new message%
+                    (parent xpanel)
+                    (label "x")))
+
+(define xrotate
+  (let ((cur 0))
+  (lambda (deg)
+    (set! cur (+ cur deg))
+    (let* ((d (degrees->radians cur))
+           (cd (cos d))
+           (sd (sin d)))
+      (set! Rx (list 1.0 0.0 0.0
+                     0.0 cd (* -1 sd)
+                     0.0 sd cd))))))
+    
+(define down-x (new button%
+                    (parent xpanel)
+                    (label "down")
+                    (callback (lambda (b e)
+                                (xrotate -30.0)))))
+
+(define up-x (new button%
+                  (parent xpanel)
+                  (label "up")
+                  (callback (lambda (b e)
+                              (xrotate 30.0)))))
+
 (define slider (new my-slider%
                     (label "Magnitude")
                     (parent left-panel)
                     (min-value 0)
                     (max-value 100)
-                    (init-value slide-init)))
+                    (init-value 50)))
 
 (define (resplit lst)
   (cond
@@ -383,7 +390,7 @@
         (set! n 0)
         (set! coords ref-coords))
       (let ((op (list-ref steps (remainder n 4)))
-            (mag (magnitude)))
+            (mag (send slider magnitude)))
         (set! coords (resplit (map op
                                    (flatten coords)
                                    (map (lambda (c)
@@ -410,16 +417,12 @@
     (when diff? ;; if new selection or slider value, reset coords
       (set! coords ref-coords))
     (unless (null? sel) ;; only vibrate when there is a selection
-      (if diff? 
-          (vibrate (vib-contribs (list-ref vibs sel)) #f)
-          (vibrate (vib-contribs (list-ref vibs sel)) #t))))
-  (send canvas refresh)
-  (send canvas on-paint)
-  (sleep/yield *refresh-rate*)
-  (loop))
+      (vibrate (vib-contribs (list-ref vibs sel)) (not diff?)))
+    (send canvas refresh)
+    (send canvas on-paint)
+    (sleep/yield *refresh-rate*)
+    (loop)))
 
 (define (main)
   (send frame show #t)
   (loop))
-
-;(main)
