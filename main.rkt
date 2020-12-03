@@ -37,12 +37,28 @@
             null
             (v+ (cdr a) (cdr b)))))
 
+(define (row x mat)
+  (take (drop mat (* 3 x)) 3))
+
+(define (col x mat)
+  (for/list ((n (in-naturals 0))
+             #:break (= n (length mat))
+             #:when (= x (modulo n 3)))
+    (list-ref mat n)))
+
 ;; dot product of 3x3 matrix and 3x1 vector
 (define (dot-mv mat vec)
   (cons (dot (take mat 3) vec)
         (if (< (length mat) 6)
             null
             (dot-mv (drop mat 3) vec))))
+
+(define (matmul a b)
+  (let ((res null))
+    (for ((n (/ (length a) 3)))
+      (for ((m (/ (length b) 3)))
+        (set! res (cons (dot (row n a) (col m b)) res))))
+    (reverse res)))
 
 (define *bg-color* (make-color 255 255 255))
 (define *xangle* (cos (/ (* 5 pi) 4.)))
@@ -231,7 +247,8 @@
 (define (cart->2d canvas x y z scale)
   (let-values (((cw ch) (center canvas))
                ((mw mh) (extent canvas))
-               ((x y z) (match (dot-mv Rx (list x y z))
+               ((x y z) (match (dot-mv (matmul Rz (matmul Ry Rx))
+                                       (list x y z))
                           ((list a b c) (values a b c)))))
     (values
      (+ cw (* (+ y (* x *xangle*)) (- mw cw) scale))
@@ -333,23 +350,16 @@
 (define list-box (new my-list-box%
                       (parent right-panel)
                       (min-width 100)
+                      (min-height 400)
                       (label #f)
                       (choices (map number->string (vib-choices)))
                       (columns '("Frequencies"))
                       (style '(single column-headers))))
 
-(define xpanel (new horizontal-panel%
-                    (parent right-panel)
-                    (style '(border))
-                    (alignment '(center center))))
-
-(define xlabel (new message%
-                    (parent xpanel)
-                    (label "x")))
-
 (define xrotate
   (let ((cur 0))
-  (lambda (deg)
+  (lambda (deg (reset #f))
+    (when reset (set! cur 0))
     (set! cur (+ cur deg))
     (let* ((d (degrees->radians cur))
            (cd (cos d))
@@ -357,18 +367,80 @@
       (set! Rx (list 1.0 0.0 0.0
                      0.0 cd (* -1 sd)
                      0.0 sd cd))))))
+
+(define yrotate
+  (let ((cur 0))
+  (lambda (deg (reset #f))
+    (when reset (set! cur 0))
+    (set! cur (+ cur deg))
+    (let* ((d (degrees->radians cur))
+           (cd (cos d))
+           (sd (sin d)))
+      (set! Ry (list cd 0.0 sd
+                     0.0 1.0 0.0 
+                     (- sd) 0.0 cd))))))
+
+(define zrotate
+  (let ((cur 0))
+  (lambda (deg (reset #f))
+    (when reset (set! cur 0))
+    (set! cur (+ cur deg))
+    (let* ((d (degrees->radians cur))
+           (cd (cos d))
+           (sd (sin d)))
+      (set! Rz (list cd (- sd) 0.0
+                     sd cd 0.0
+                     0.0 0.0 1.0))))))
     
+(define xpanel (new horizontal-panel%
+                    (parent right-panel)
+                    (style '(border))
+                    (alignment '(center center))))
+
 (define down-x (new button%
                     (parent xpanel)
-                    (label "down")
+                    (label "x \u2193")
                     (callback (lambda (b e)
                                 (xrotate -30.0)))))
 
 (define up-x (new button%
                   (parent xpanel)
-                  (label "up")
+                  (label "x \u2191")
                   (callback (lambda (b e)
                               (xrotate 30.0)))))
+(define ypanel (new horizontal-panel%
+                    (parent right-panel)
+                    (style '(border))
+                    (alignment '(center center))))
+
+(define down-y (new button%
+                    (parent ypanel)
+                    (label "y \u2193")
+                    (callback (lambda (b e)
+                                (yrotate 30.0)))))
+
+(define zpanel (new horizontal-panel%
+                    (parent right-panel)
+                    (style '(border))
+                    (alignment '(center center))))
+
+(define down-z (new button%
+                    (parent zpanel)
+                    (label "z \u2193")
+                    (callback (lambda (b e)
+                                (zrotate 30.0)))))
+
+(define up-z (new button%
+                  (parent zpanel)
+                  (label "z \u2191")
+                  (callback (lambda (b e)
+                              (zrotate -30.0)))))
+
+(define up-y (new button%
+                  (parent ypanel)
+                  (label "y \u2191")
+                  (callback (lambda (b e)
+                              (yrotate -30.0)))))
 
 (define slider (new my-slider%
                     (label "Magnitude")
